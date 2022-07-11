@@ -24,6 +24,9 @@ void* realloc(void* ptr, size_t size) {
 
     void* p = pvPortMalloc(size);
     if(ptr != NULL) {
+        // Copy size may exceed source buffer, but we don't care
+        // Mostly because our allocator doesn't know how much memory was allocated
+        // And because overread is not going to break anything
         memcpy(p, ptr, size);
         vPortFree(ptr);
     }
