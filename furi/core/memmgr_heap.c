@@ -249,7 +249,6 @@ void memmgr_heap_printf_free_blocks() {
     //xTaskResumeAll();
 }
 
-#ifdef HEAP_PRINT_DEBUG
 char* ultoa(unsigned long num, char* str, int radix) {
     char temp[33]; // at radix 2 the string is at most 32 + 1 null long.
     int temp_loc = 0;
@@ -276,6 +275,8 @@ char* ultoa(unsigned long num, char* str, int radix) {
 
     return str;
 }
+
+#ifdef HEAP_PRINT_DEBUG
 
 static void print_heap_init() {
     char tmp_str[33];
@@ -335,7 +336,40 @@ static void print_heap_free(void* ptr) {
 #endif
 /*-----------------------------------------------------------*/
 
+#ifdef HEAP_CANARY_ENABLE
+static const uint32_t HEAP_CANARY_VALUE = 0xB1BAB0BAu;
+
+static void print_heap_canary_setup(void* retptr, size_t size, void* canaryptr) {
+    char tmp_str[33];
+    const char* name = furi_thread_get_name(furi_thread_get_current_id());
+    if(!name) {
+        name = "";
+    }
+
+    // {thread name|f|address}
+    FURI_CRITICAL_ENTER();
+    furi_hal_console_puts(name);
+    furi_hal_console_puts(": ");
+    ultoa((unsigned long)retptr, tmp_str, 16);
+    furi_hal_console_puts(tmp_str);
+    furi_hal_console_puts("+");
+    ultoa(size, tmp_str, 16);
+    furi_hal_console_puts(tmp_str);
+    furi_hal_console_puts(", canary @ ");
+    ultoa((unsigned long)canaryptr, tmp_str, 16);
+    furi_hal_console_puts(tmp_str);
+    furi_hal_console_puts("\r\n");
+    FURI_CRITICAL_EXIT();
+}
+
+#endif
+
 void* pvPortMalloc(size_t xWantedSize) {
+#ifdef HEAP_CANARY_ENABLE
+    uint32_t* pCanary = NULL;
+    xWantedSize += sizeof(HEAP_CANARY_VALUE);
+#endif
+
     BlockLink_t *pxBlock, *pxPreviousBlock, *pxNewBlockLink;
     void* pvReturn = NULL;
     size_t to_wipe = xWantedSize;
@@ -442,6 +476,11 @@ void* pvPortMalloc(size_t xWantedSize) {
                     pxBlock->xBlockSize |= xBlockAllocatedBit;
                     pxBlock->pxNextFreeBlock = NULL;
 
+                    // #ifdef HEAP_CANARY_ENABLE
+                    //                     pCanary =
+                    //                         (uint32_t*)((uint8_t*)pvReturn + xWantedSize - sizeof(HEAP_CANARY_VALUE));
+                    // #endif
+
 #ifdef HEAP_PRINT_DEBUG
                     print_heap_block = pxBlock;
 #endif
@@ -478,6 +517,14 @@ void* pvPortMalloc(size_t xWantedSize) {
 
     furi_check(pvReturn);
     pvReturn = memset(pvReturn, 0, to_wipe);
+#ifdef HEAP_CANARY_ENABLE
+    pCanary =
+        (uint32_t*)((uint8_t*)pvReturn - xHeapStructSize + xWantedSize - sizeof(HEAP_CANARY_VALUE));
+    print_heap_canary_setup(pvReturn, to_wipe, pCanary);
+    furi_assert(pCanary);
+    *pCanary = HEAP_CANARY_VALUE;
+    // *(uint32_t*)((uint8_t*)pvReturn + xWantedSize - sizeof(HEAP_CANARY_VALUE)) = HEAP_CANARY_VALUE;
+#endif
     return pvReturn;
 }
 /*-----------------------------------------------------------*/
@@ -515,6 +562,13 @@ void vPortFree(void* pv) {
                     furi_assert((pxLink->xBlockSize - xHeapStructSize) < 1024 * 256);
                     furi_assert((int32_t)(pxLink->xBlockSize - xHeapStructSize) >= 0);
 
+#ifdef HEAP_CANARY_ENABLE
+                    uint32_t* pCanary =
+                        (uint32_t*)((uint8_t*)pv + (pxLink->xBlockSize - xHeapStructSize) - sizeof(HEAP_CANARY_VALUE));
+                    if(*pCanary != HEAP_CANARY_VALUE) {
+                        furi_crash("Heap corruption detected");
+                    }
+#endif
                     /* Add this block to the list of free blocks. */
                     xFreeBytesRemaining += pxLink->xBlockSize;
                     traceFREE(pv, pxLink->xBlockSize);
