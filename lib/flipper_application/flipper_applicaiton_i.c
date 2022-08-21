@@ -13,11 +13,12 @@ bool flipper_application_load_elf_headers(FlipperApplication* e, const char* pat
     Elf32_Ehdr h;
     Elf32_Shdr sH;
 
-    if(!storage_file_open(e->fd, path, FSAM_READ, FSOM_OPEN_EXISTING) ||
-       !storage_file_seek(e->fd, 0, true) ||
-       storage_file_read(e->fd, &h, sizeof(h)) != sizeof(h) ||
-       !storage_file_seek(e->fd, h.e_shoff + h.e_shstrndx * sizeof(sH), true) ||
-       storage_file_read(e->fd, &sH, sizeof(Elf32_Shdr)) != sizeof(Elf32_Shdr)) {
+    // if(!buffered_file_stream_open(e->stream, path, FSAM_READ, FSOM_OPEN_EXISTING) ||
+    if(!file_stream_open(e->stream, path, FSAM_READ, FSOM_OPEN_EXISTING) ||
+       !stream_seek(e->stream, 0, StreamOffsetFromStart) ||
+       stream_read(e->stream, (uint8_t*)&h, sizeof(Elf32_Ehdr)) != sizeof(Elf32_Ehdr) ||
+       !stream_seek(e->stream, h.e_shoff + h.e_shstrndx * sizeof(sH), StreamOffsetFromStart) ||
+       stream_read(e->stream, (uint8_t*)&sH, sizeof(Elf32_Shdr)) != sizeof(Elf32_Shdr)) {
         return false;
     }
 
@@ -36,10 +37,12 @@ static bool flipper_application_load_metadata(FlipperApplication* e, Elf32_Shdr*
         return false;
     }
 
-    if(!storage_file_seek(e->fd, sh->sh_offset, true) ||
-       storage_file_read(e->fd, &e->manifest, sh->sh_size) != sh->sh_size) {
+    if(!stream_seek(e->stream, sh->sh_offset, StreamOffsetFromStart) ||
+       stream_read(e->stream, (uint8_t*)&e->manifest, sh->sh_size) !=
+           sh->sh_size) { // use sizeof(e->manifest)?
         return false;
     }
+
     return true;
 }
 
@@ -91,16 +94,16 @@ static int flipper_application_preload_section(
 
 static bool
     read_string_from_offset(FlipperApplication* e, off_t offset, char* buffer, size_t buffer_size) {
-    bool ret = false;
+    bool success = false;
 
-    off_t old = storage_file_tell(e->fd);
-    if(storage_file_seek(e->fd, offset, true) &&
-       (storage_file_read(e->fd, buffer, buffer_size) != buffer_size)) {
-        ret = true;
+    off_t old = stream_tell(e->stream);
+    if(stream_seek(e->stream, offset, StreamOffsetFromStart) &&
+       stream_read(e->stream, (uint8_t*)buffer, buffer_size) == buffer_size) {
+        success = true;
     }
-    (void)storage_file_seek(e->fd, old, true);
 
-    return ret;
+    stream_seek(e->stream, old, StreamOffsetFromStart);
+    return success;
 }
 
 static bool read_section_name(FlipperApplication* e, off_t off, char* buf, size_t max) {
@@ -113,15 +116,13 @@ static bool read_symbol_name(FlipperApplication* e, off_t off, char* buf, size_t
 
 static bool read_section_header(FlipperApplication* e, int n, Elf32_Shdr* h) {
     off_t offset = SECTION_OFFSET(e, n);
-    if(!storage_file_seek(e->fd, offset, true) ||
-       (storage_file_read(e->fd, h, sizeof(Elf32_Shdr)) != sizeof(Elf32_Shdr))) {
-        return false;
-    }
-    return true;
+
+    return stream_seek(e->stream, offset, StreamOffsetFromStart) &&
+           stream_read(e->stream, (uint8_t*)h, sizeof(Elf32_Shdr)) == sizeof(Elf32_Shdr);
 }
 
 static bool read_section(FlipperApplication* e, int n, Elf32_Shdr* h, char* name, size_t nlen) {
-    if(read_section_header(e, n, h) != 0) {
+    if(!read_section_header(e, n, h)) {
         return false;
     }
     if(!h->sh_name) {
@@ -143,8 +144,10 @@ bool flipper_application_load_section_table(FlipperApplication* e) {
             FURI_LOG_E(TAG, "Error reading section %d", n);
             return false;
         }
-        if(section_header.sh_name) {
-            read_section_name(e, section_header.sh_name, name, sizeof(name));
+        if(section_header.sh_name &&
+           !read_section_name(e, section_header.sh_name, name, sizeof(name))) {
+            FURI_LOG_E(TAG, "Error reading section name %d", n);
+            return false;
         }
 
         FURI_LOG_D(TAG, "Examining section %d %s", n, name);
@@ -154,7 +157,7 @@ bool flipper_application_load_section_table(FlipperApplication* e) {
             e->state.mmap_entry_count++;
         }
         if(IS_FLAGS_SET(found, FoundAll)) {
-            return FoundAll;
+            return true;
         }
     }
 
@@ -252,20 +255,22 @@ static Elf32_Addr address_of(FlipperApplication* e, Elf32_Sym* sym, const char* 
 }
 
 static bool read_symbol(FlipperApplication* e, int n, Elf32_Sym* sym, char* name, size_t nlen) {
-    bool ret = false;
-    off_t old = storage_file_tell(e->fd);
+    bool success = false;
+    off_t old = stream_tell(e->stream);
     off_t pos = e->symbol_table + n * sizeof(Elf32_Sym);
-    if(storage_file_seek(e->fd, pos, true) &&
-       storage_file_read(e->fd, sym, sizeof(Elf32_Sym)) == sizeof(Elf32_Sym)) {
+
+    if(stream_seek(e->stream, pos, StreamOffsetFromStart) &&
+       stream_read(e->stream, (uint8_t*)sym, sizeof(Elf32_Sym)) == sizeof(Elf32_Sym)) {
         if(sym->st_name)
-            ret = read_symbol_name(e, sym->st_name, name, nlen);
+            success = read_symbol_name(e, sym->st_name, name, nlen);
         else {
             Elf32_Shdr shdr;
-            ret = read_section(e, sym->st_shndx, &shdr, name, nlen);
+            success = read_section(e, sym->st_shndx, &shdr, name, nlen);
         }
     }
-    (void)storage_file_seek(e->fd, old, true);
-    return ret;
+
+    stream_seek(e->stream, old, StreamOffsetFromStart);
+    return success;
 }
 
 #define MAX_SYMBOL_NAME_LEN 128u
@@ -275,7 +280,7 @@ static bool relocate(FlipperApplication* e, Elf32_Shdr* h, ELFSection_t* s) {
         Elf32_Rel rel;
         size_t relEntries = h->sh_size / sizeof(rel);
         size_t relCount;
-        (void)storage_file_seek(e->fd, h->sh_offset, true);
+        stream_seek(e->stream, h->sh_offset, StreamOffsetFromStart);
         FURI_LOG_D(TAG, " Offset   Info     Type             Name");
 
         int relocate_result = true;
@@ -286,37 +291,44 @@ static bool relocate(FlipperApplication* e, Elf32_Shdr* h, ELFSection_t* s) {
                 furi_delay_tick(1);
             }
 
-            if(storage_file_read(e->fd, &rel, sizeof(rel)) == sizeof(rel)) {
-                Elf32_Sym sym;
-                Elf32_Addr symAddr;
+            if(stream_read(e->stream, (uint8_t*)&rel, sizeof(Elf32_Rel)) != sizeof(Elf32_Rel)) {
+                FURI_LOG_E(TAG, "  reloc read fail");
+                return false;
+            }
 
-                int symEntry = ELF32_R_SYM(rel.r_info);
-                int relType = ELF32_R_TYPE(rel.r_info);
-                Elf32_Addr relAddr = ((Elf32_Addr)s->data) + rel.r_offset;
+            Elf32_Sym sym;
+            Elf32_Addr symAddr;
 
-                read_symbol(e, symEntry, &sym, symbol_name, MAX_SYMBOL_NAME_LEN);
+            int symEntry = ELF32_R_SYM(rel.r_info);
+            int relType = ELF32_R_TYPE(rel.r_info);
+            Elf32_Addr relAddr = ((Elf32_Addr)s->data) + rel.r_offset;
+
+            if(!read_symbol(e, symEntry, &sym, symbol_name, MAX_SYMBOL_NAME_LEN)) {
+                FURI_LOG_E(TAG, "  symbol read fail");
+                return false;
+            }
+
+            FURI_LOG_D(
+                TAG,
+                " %08X %08X %-16s %s",
+                (unsigned int)rel.r_offset,
+                (unsigned int)rel.r_info,
+                type_to_str(relType),
+                symbol_name);
+
+            symAddr = address_of(e, &sym, symbol_name);
+            if(symAddr != 0xffffffff) {
                 FURI_LOG_D(
                     TAG,
-                    " %08X %08X %-16s %s",
-                    (unsigned int)rel.r_offset,
-                    (unsigned int)rel.r_info,
-                    type_to_str(relType),
-                    symbol_name);
-
-                symAddr = address_of(e, &sym, symbol_name);
-                if(symAddr != 0xffffffff) {
-                    FURI_LOG_D(
-                        TAG,
-                        "  symAddr=%08X relAddr=%08X",
-                        (unsigned int)symAddr,
-                        (unsigned int)relAddr);
-                    if(!relocate_symbol(relAddr, relType, symAddr)) {
-                        relocate_result = false;
-                    }
-                } else {
-                    FURI_LOG_D(TAG, "  No symbol address of %s", symbol_name);
+                    "  symAddr=%08X relAddr=%08X",
+                    (unsigned int)symAddr,
+                    (unsigned int)relAddr);
+                if(!relocate_symbol(relAddr, relType, symAddr)) {
                     relocate_result = false;
                 }
+            } else {
+                FURI_LOG_D(TAG, "  No symbol address of %s", symbol_name);
+                relocate_result = false;
             }
         }
 
@@ -354,8 +366,9 @@ static bool flipper_application_load_section_data(FlipperApplication* e, ELFSect
         return true;
     }
 
-    if((!storage_file_seek(e->fd, section_header.sh_offset, true)) ||
-       (storage_file_read(e->fd, s->data, section_header.sh_size) != section_header.sh_size)) {
+    if(!stream_seek(e->stream, section_header.sh_offset, StreamOffsetFromStart) ||
+       (stream_read(e->stream, (uint8_t*)s->data, section_header.sh_size) !=
+        section_header.sh_size)) {
         FURI_LOG_E(TAG, "    seek/read fail");
         flipper_application_free_section(s);
         return false;

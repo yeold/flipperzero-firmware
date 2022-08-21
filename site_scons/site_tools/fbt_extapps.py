@@ -85,7 +85,7 @@ def generate(env, **kw):
                         "--remove-section .ARM.attributes "
                         "--add-section .fapmeta=${SOURCE}.meta "
                         "--set-section-flags .fapmeta=contents,noload,readonly,data "
-                        "--strip-debug --strip-unneeded "
+                        "--localize-hidden --strip-debug --strip-unneeded "
                         "--add-gnu-debuglink=${SOURCE} "
                         "${SOURCES} ${TARGET}",
                         "$APPMETAEMBED_COMSTR",

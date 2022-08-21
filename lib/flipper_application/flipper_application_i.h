@@ -2,6 +2,9 @@
 
 #include "elf.h"
 #include "flipper_application.h"
+#include <toolbox/stream/stream.h>
+#include <toolbox/stream/file_stream.h>
+#include <toolbox/stream/buffered_file_stream.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,7 +23,7 @@ typedef struct {
 
 struct FlipperApplication {
     const ElfApiInterface* api_interface;
-    File* fd;
+    Stream* stream;
     FlipperApplicationState state;
     FlipperApplicationManifest manifest;
 

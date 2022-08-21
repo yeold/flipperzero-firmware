@@ -10,7 +10,8 @@ FlipperApplication*
     flipper_application_alloc(Storage* storage, const ElfApiInterface* api_interface) {
     FlipperApplication* app = malloc(sizeof(FlipperApplication));
     app->api_interface = api_interface;
-    app->fd = storage_file_alloc(storage);
+    // app->stream = buffered_file_stream_alloc(storage);
+    app->stream = file_stream_alloc(storage);
     app->thread = NULL;
     return app;
 }
@@ -32,7 +33,9 @@ void flipper_application_free(FlipperApplication* app) {
         flipper_application_free_section(sections[i]);
     }
 
-    storage_file_free(app->fd);
+    file_stream_close(app->stream);
+    // buffered_file_stream_close(app->stream);
+    stream_free(app->stream);
 
     free(app);
 }
