@@ -1,0 +1,9 @@
+App(
+    appid="mod_player",
+    name="MOD Player",
+    apptype=FlipperAppType.PLUGIN,
+    entry_point="mod_player_app",
+    cdefines=["APP_MOD_PLAYER"],
+    stack_size=4 * 1024,
+    order=160,
+)
