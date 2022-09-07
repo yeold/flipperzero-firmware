@@ -23,6 +23,8 @@
 #define PLAYER_SAMPLE_RATE 9600
 #define SAMPLE_BUFFER_SIZE 8192
 
+#define HXCMOD_8BITS_OUTPUT 1
+
 
 msample dmasoundbuffer[SAMPLE_BUFFER_SIZE] __attribute__ ((aligned (4)));
 
